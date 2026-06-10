@@ -163,16 +163,14 @@ function formatRawInput(data: string): string {
   return [...data]
     .map((char) => {
       const code = char.codePointAt(0);
-      return code === undefined
-        ? "?"
-        : code >= 32 && code <= 126
-          ? char
-          : `\\u${code.toString(16).padStart(4, "0")}`;
+      if (code === undefined) return "?";
+      if (code >= 32 && code <= 126) return char;
+      return String.raw`\u${code.toString(16).padStart(4, "0")}`;
     })
     .join("");
 }
 
-export default function (pi: ExtensionAPI) {
+export default function register(pi: ExtensionAPI) {
   const config = readConfig();
   const conflictStrategy = config.conflictStrategy ?? "auto";
   const configuredPrevKey = config.shortcuts?.prev ?? DEFAULT_PREV_KEY;
@@ -194,9 +192,10 @@ export default function (pi: ExtensionAPI) {
     if (!debugEnabled) return;
 
     mkdirSync(PI_DIR, { recursive: true });
+    const dataPart = data ? ` ${JSON.stringify(data)}` : "";
     appendFileSync(
       DEBUG_FILE,
-      `[${new Date().toISOString()}] ${message}${data ? ` ${JSON.stringify(data)}` : ""}\n`,
+      `[${new Date().toISOString()}] ${message}${dataPart}\n`,
       "utf-8",
     );
   };
@@ -262,7 +261,7 @@ export default function (pi: ExtensionAPI) {
     }
 
     debug("registerShortcut registered", { shortcut, description });
-    pi.registerShortcut(shortcut, { description, handler: (ctx) => void handler(ctx) });
+    pi.registerShortcut(shortcut, { description, handler: (ctx) => { handler(ctx); } });
   };
 
   pi.on("session_start", (_event, ctx) => {
@@ -270,9 +269,10 @@ export default function (pi: ExtensionAPI) {
     history = loadHistory(currentCwd);
     historyIndex = -1;
     savedEditorText = "";
+    const icon = showStatusIcon ? "📜 " : "";
     currentStatusLabel =
       history.length > 0
-        ? `${showStatusIcon ? "📜 " : ""}${history.length} cmds ${formatShortcutHint(keyPrev, keyNext)}`
+        ? `${icon}${history.length} cmds ${formatShortcutHint(keyPrev, keyNext)}`
         : undefined;
 
     debug("session_start", {
