@@ -16,8 +16,8 @@
  * History is stored in ~/.pi/folder-history/<path-with-dashes>.jsonl
  */
 
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import { matchesKey } from "@mariozechner/pi-tui";
+import { CustomEditor, type ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import { matchesKey, type EditorComponent } from "@mariozechner/pi-tui";
 import { existsSync, mkdirSync, readFileSync, appendFileSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
@@ -30,6 +30,11 @@ const SAFE_PREV_KEY = "ctrl+up";
 const SAFE_NEXT_KEY = "ctrl+down";
 type ShortcutKey = Parameters<ExtensionAPI["registerShortcut"]>[0];
 type ConflictStrategy = "auto" | "register" | "safe";
+type AutocompleteAwareEditor = EditorComponent & {
+  getCursor?: () => { line: number; col: number };
+  getLines?: () => string[];
+  isShowingAutocomplete?: () => boolean;
+};
 
 interface Config {
   shortcuts?: {
@@ -163,6 +168,25 @@ function isSingleLine(text: string): boolean {
   return !text.includes("\n");
 }
 
+function isAutocompleteActive(editor: AutocompleteAwareEditor | undefined): boolean {
+  return editor?.isShowingAutocomplete?.() === true;
+}
+
+function shouldHandleHistoryKey(
+  editor: AutocompleteAwareEditor | undefined,
+  editorText: string,
+  matchesPrev: boolean,
+  matchesNext: boolean
+): boolean {
+  if (isSingleLine(editorText)) return true;
+
+  const cursor = editor?.getCursor?.();
+  const lines = editor?.getLines?.();
+  if (!cursor || !lines) return false;
+
+  return (matchesPrev && cursor.line === 0) || (matchesNext && cursor.line === lines.length - 1);
+}
+
 function formatRawInput(data: string): string {
   return [...data]
     .map((char) => {
@@ -214,6 +238,7 @@ export default function (pi: ExtensionAPI) {
   let currentCwd = "";
   let currentStatusLabel: string | undefined;
   let unsubscribeRawInput: (() => void) | undefined;
+  let currentEditor: AutocompleteAwareEditor | undefined;
 
   const refreshUi = (ctx: HistoryContext): void => {
     ctx.ui.setStatus("folder-history", currentStatusLabel);
@@ -308,6 +333,13 @@ export default function (pi: ExtensionAPI) {
 
     ctx.ui.setStatus("folder-history", currentStatusLabel);
 
+    const previousEditorFactory = ctx.ui.getEditorComponent();
+    ctx.ui.setEditorComponent((tui, theme, keybindings) => {
+      const editor = previousEditorFactory?.(tui, theme, keybindings) ?? new CustomEditor(tui, theme, keybindings);
+      currentEditor = editor as AutocompleteAwareEditor;
+      return editor;
+    });
+
     unsubscribeRawInput?.();
     const useRawPrev = shouldUseRawInput(keyPrev);
     const useRawNext = shouldUseRawInput(keyNext);
@@ -324,14 +356,21 @@ export default function (pi: ExtensionAPI) {
             length: data.length,
             editorLength: editorText.length,
             singleLine: isSingleLine(editorText),
+            cursorLine: currentEditor?.getCursor?.().line,
+            lineCount: currentEditor?.getLines?.().length,
             matchesPrev,
             matchesNext,
             historyIndex,
             historyLength: history.length,
           });
         }
-        if (!isSingleLine(editorText)) {
-          debug("raw input passed through", { reason: "multi-line" });
+        if (historyIndex === -1 && isAutocompleteActive(currentEditor)) {
+          debug("raw input passed through", { reason: "autocomplete-active" });
+          return;
+        }
+
+        if (!shouldHandleHistoryKey(currentEditor, editorText, matchesPrev, matchesNext)) {
+          debug("raw input passed through", { reason: "not-history-boundary" });
           return;
         }
 

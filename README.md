@@ -23,7 +23,7 @@ pi -e npm:pi-command-history
 
 When you enter a command in pi, it's saved to a per-folder history file. Next time you open pi in the same folder (even in a new session), press `up` to cycle through your previous commands.
 
-By default, `up`/`down` are handled through raw terminal input to avoid pi extension shortcut conflict warnings with `tui.select.up` and `tui.select.down`. The extension only intercepts these keys for single-line editor text; multi-line input falls back to pi's normal cursor movement.
+By default, `up`/`down` are handled through raw terminal input to avoid pi extension shortcut conflict warnings with `tui.select.up` and `tui.select.down`. The extension intercepts these keys when history navigation owns the cursor position; other cases fall back to pi's normal cursor movement or command completion.
 
 ## Config
 
@@ -53,7 +53,7 @@ Set `debug` to `true`, or start pi with `PI_COMMAND_HISTORY_DEBUG=1`, to write t
 | `register` | Always use `pi.registerShortcut()`. This can show pi shortcut conflict warnings for `up`/`down`. |
 | `safe` | Replace conflicting `up`/`down` shortcuts with `ctrl+up`/`ctrl+down`. |
 
-Raw terminal input interception only consumes `up`/`down` when the editor text is a single line and history navigation actually changes the editor. Otherwise pi receives the original key.
+Raw terminal input interception consumes `up`/`down` only when history navigation should own the key: single-line editor text, or multi-line text with the cursor on the first line for `up` / last line for `down`. When `/` command completion is active before history browsing starts, `up`/`down` pass through to pi's command list.
 
 ### What gets saved
 
