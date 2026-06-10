@@ -31,13 +31,15 @@ type AutocompleteAwareEditor = EditorComponent & {
   isShowingAutocomplete?: () => boolean;
 };
 
+type ShowStatus = "hidden" | "text" | "full";
+
 interface Config {
   shortcuts?: {
     prev?: ShortcutKey;
     next?: ShortcutKey;
   };
   conflictStrategy?: ConflictStrategy;
-  showStatusIcon?: boolean;
+  showStatus?: ShowStatus;
   debug?: boolean;
 }
 
@@ -68,9 +70,13 @@ function readConfig(): Config {
   return {
     ...(prev || next ? { shortcuts: { prev, next } } : {}),
     ...(strategy ? { conflictStrategy: strategy } : {}),
-    ...(typeof value.showStatusIcon === "boolean" ? { showStatusIcon: value.showStatusIcon } : {}),
+    showStatus: readShowStatus(value.showStatus) ?? "hidden",
     ...(typeof value.debug === "boolean" ? { debug: value.debug } : {}),
   };
+}
+
+function readShowStatus(value: unknown): ShowStatus | undefined {
+  return value === "hidden" || value === "text" || value === "full" ? value : undefined;
 }
 
 function readShortcut(value: unknown): ShortcutKey | undefined {
@@ -183,7 +189,7 @@ export default function register(pi: ExtensionAPI) {
     conflictStrategy === "safe" && isKnownConflict(configuredNextKey)
       ? SAFE_NEXT_KEY
       : configuredNextKey;
-  const showStatusIcon = config.showStatusIcon ?? true;
+  const showStatus = config.showStatus ?? "hidden";
   const debugEnabled = config.debug === true || process.env.PI_COMMAND_HISTORY_DEBUG === "1";
   const shouldUseRawInput = (shortcut: ShortcutKey) =>
     conflictStrategy === "auto" && isKnownConflict(shortcut);
@@ -269,9 +275,11 @@ export default function register(pi: ExtensionAPI) {
     history = loadHistory(currentCwd);
     historyIndex = -1;
     savedEditorText = "";
-    const icon = showStatusIcon ? "📜 " : "";
+
+    let icon = "";
+    if (showStatus === "full") icon = "📜 ";
     currentStatusLabel =
-      history.length > 0
+      history.length > 0 && showStatus !== "hidden"
         ? `${icon}${history.length} cmds ${formatShortcutHint(keyPrev, keyNext)}`
         : undefined;
 
@@ -283,10 +291,12 @@ export default function register(pi: ExtensionAPI) {
       conflictStrategy,
       keyPrev,
       keyNext,
-      showStatusIcon,
+      showStatus,
     });
 
-    ctx.ui.setStatus("folder-history", currentStatusLabel);
+    if (showStatus !== "hidden") {
+      ctx.ui.setStatus("folder-history", currentStatusLabel);
+    }
 
     const previousEditorFactory = ctx.ui.getEditorComponent();
     ctx.ui.setEditorComponent((tui, theme, keybindings) => {

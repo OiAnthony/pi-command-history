@@ -27,7 +27,7 @@ By default, `up`/`down` are handled through raw terminal input to avoid pi exten
 
 ## Config
 
-Create `~/.pi/pi-command-history.json` to customize shortcuts, conflict handling, or hide the status icon:
+Create `~/.pi/pi-command-history.json` to customize shortcuts, conflict handling, or status display:
 
 ```json
 {
@@ -36,12 +36,20 @@ Create `~/.pi/pi-command-history.json` to customize shortcuts, conflict handling
     "next": "down"
   },
   "conflictStrategy": "auto",
-  "showStatusIcon": true,
+  "showStatus": "hidden",
   "debug": false
 }
 ```
 
 Invalid config values are ignored and fall back to the defaults.
+
+The `showStatus` field controls whether a status indicator appears in the footer:
+
+| Value | Behavior |
+|---|---|
+| `"hidden"` | No status indicator shown (default) |
+| `"text"` | Show `12 cmds (↑/↓)` without icon |
+| `"full"` | Show `📜 12 cmds (↑/↓)` with icon |
 
 Set `debug` to `true`, or start pi with `PI_COMMAND_HISTORY_DEBUG=1`, to write terminal key diagnostics to `~/.pi/pi-command-history-debug.log`. Debug logging records escape sequences and history state, not normal text input.
 
