@@ -61,7 +61,7 @@ Set `debug` to `true`, or start pi with `PI_COMMAND_HISTORY_DEBUG=1`, to write t
 | `register` | Always use `pi.registerShortcut()`. This can show pi shortcut conflict warnings for `up`/`down`. |
 | `safe` | Replace conflicting `up`/`down` shortcuts with `ctrl+up`/`ctrl+down`. |
 
-Raw terminal input interception consumes `up`/`down` only when history navigation should own the key: single-line editor text, or multi-line text with the cursor on the first line for `up` / last line for `down`. When `/` command completion is active before history browsing starts, `up`/`down` pass through to pi's command list.
+Raw terminal input interception consumes `up`/`down` only when history navigation should own the key: the cursor is on the first visual line for `up` or the last visual line for `down`. When `/` command completion is active before history browsing starts, `up`/`down` pass through to pi's command list.
 
 ### What gets saved
 

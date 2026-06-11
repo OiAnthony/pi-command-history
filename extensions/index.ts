@@ -31,6 +31,11 @@ type AutocompleteAwareEditor = EditorComponent & {
   isShowingAutocomplete?: () => boolean;
 };
 
+type VisualBoundaryEditor = {
+  isOnFirstVisualLine?: () => boolean;
+  isOnLastVisualLine?: () => boolean;
+};
+
 type ShowStatus = "hidden" | "text" | "full";
 
 interface Config {
@@ -148,12 +153,24 @@ function isKnownConflict(shortcut: ShortcutKey): boolean {
   return shortcut === "up" || shortcut === "down";
 }
 
-function canHandleHistoryKey(
+export function canHandleHistoryKey(
   editor: AutocompleteAwareEditor | undefined,
   editorText: string,
   matchesPrev: boolean,
   matchesNext: boolean,
 ): boolean {
+  const visualEditor = editor as VisualBoundaryEditor | undefined;
+
+  if (matchesPrev) {
+    const isOnFirstVisualLine = visualEditor?.isOnFirstVisualLine?.();
+    if (typeof isOnFirstVisualLine === "boolean") return isOnFirstVisualLine;
+  }
+
+  if (matchesNext) {
+    const isOnLastVisualLine = visualEditor?.isOnLastVisualLine?.();
+    if (typeof isOnLastVisualLine === "boolean") return isOnLastVisualLine;
+  }
+
   if (!editorText.includes("\n")) return true;
 
   const cursor = editor?.getCursor?.();
@@ -199,11 +216,7 @@ export default function register(pi: ExtensionAPI) {
 
     mkdirSync(PI_DIR, { recursive: true });
     const dataPart = data ? ` ${JSON.stringify(data)}` : "";
-    appendFileSync(
-      DEBUG_FILE,
-      `[${new Date().toISOString()}] ${message}${dataPart}\n`,
-      "utf-8",
-    );
+    appendFileSync(DEBUG_FILE, `[${new Date().toISOString()}] ${message}${dataPart}\n`, "utf-8");
   };
 
   let history: string[] = [];
