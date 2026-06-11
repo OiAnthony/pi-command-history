@@ -267,7 +267,12 @@ export default function register(pi: ExtensionAPI) {
     }
 
     debug("registerShortcut registered", { shortcut, description });
-    pi.registerShortcut(shortcut, { description, handler: (ctx) => { handler(ctx); } });
+    pi.registerShortcut(shortcut, {
+      description,
+      handler: (ctx) => {
+        handler(ctx);
+      },
+    });
   };
 
   pi.on("session_start", (_event, ctx) => {
@@ -318,11 +323,24 @@ export default function register(pi: ExtensionAPI) {
 
     debug("raw input listener registered", { keyPrev, keyNext, useRawPrev, useRawNext });
     unsubscribeRawInput = ctx.ui.onTerminalInput((data) => {
-      const editorText = ctx.ui.getEditorText();
       const matchesPrev = useRawPrev && matchesKey(data, keyPrev);
       const matchesNext = useRawNext && matchesKey(data, keyNext);
+      if (!matchesPrev && !matchesNext) {
+        return;
+      }
 
-      if (data.startsWith("\u001b") || matchesPrev || matchesNext) {
+      if (history.length === 0 && historyIndex === -1) {
+        debug("raw input passed through", { reason: "empty-history" });
+        return;
+      }
+
+      if (historyIndex === -1 && currentEditor?.isShowingAutocomplete?.()) {
+        debug("raw input passed through", { reason: "autocomplete-active" });
+        return;
+      }
+
+      const editorText = ctx.ui.getEditorText();
+      if (debugEnabled) {
         debug("raw input received", {
           raw: formatRawInput(data),
           length: data.length,
@@ -335,11 +353,6 @@ export default function register(pi: ExtensionAPI) {
           historyIndex,
           historyLength: history.length,
         });
-      }
-
-      if (historyIndex === -1 && currentEditor?.isShowingAutocomplete?.()) {
-        debug("raw input passed through", { reason: "autocomplete-active" });
-        return;
       }
 
       if (!canHandleHistoryKey(currentEditor, editorText, matchesPrev, matchesNext)) {
@@ -357,9 +370,7 @@ export default function register(pi: ExtensionAPI) {
         return { consume: true };
       }
 
-      if (matchesPrev || matchesNext) {
-        debug("raw input matched but passed through", { reason: "no-history-change" });
-      }
+      debug("raw input matched but passed through", { reason: "no-history-change" });
     });
   });
 
