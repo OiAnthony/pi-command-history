@@ -6,6 +6,7 @@ import { canHandleHistoryKey } from "./index.js";
 type BoundaryEditor = EditorComponent & {
   isOnFirstVisualLine: () => boolean;
   isOnLastVisualLine: () => boolean;
+  focused?: boolean;
 };
 
 function createEditor(first: boolean, last: boolean): BoundaryEditor {
@@ -28,5 +29,13 @@ describe("canHandleHistoryKey", () => {
     assert.equal(canHandleHistoryKey(createEditor(true, false), "first\nsecond", false, true), false);
     assert.equal(canHandleHistoryKey(createEditor(false, true), "first\nsecond", true, false), false);
     assert.equal(canHandleHistoryKey(createEditor(false, true), "first\nsecond", false, true), true);
+  });
+
+  test("does not navigate history when the editor is unfocused", () => {
+    const editor = createEditor(true, true);
+    editor.focused = false;
+
+    assert.equal(canHandleHistoryKey(editor, "/model", true, false), false);
+    assert.equal(canHandleHistoryKey(editor, "/model", false, true), false);
   });
 });

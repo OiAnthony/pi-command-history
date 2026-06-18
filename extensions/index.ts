@@ -29,6 +29,7 @@ type AutocompleteAwareEditor = EditorComponent & {
   getCursor?: () => { line: number; col: number };
   getLines?: () => string[];
   isShowingAutocomplete?: () => boolean;
+  focused?: boolean;
 };
 
 type VisualBoundaryEditor = {
@@ -159,6 +160,8 @@ export function canHandleHistoryKey(
   matchesPrev: boolean,
   matchesNext: boolean,
 ): boolean {
+  if (editor?.focused === false) return false;
+
   const visualEditor = editor as VisualBoundaryEditor | undefined;
 
   if (matchesPrev) {
