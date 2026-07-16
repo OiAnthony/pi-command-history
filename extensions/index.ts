@@ -8,7 +8,9 @@
 
 import { CustomEditor, type ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { matchesKey, type EditorComponent } from "@mariozechner/pi-tui";
-import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
+import { appendFile, mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -17,6 +19,7 @@ const HISTORY_DIR = join(PI_DIR, "folder-history");
 const CONFIG_FILE = join(PI_DIR, "pi-command-history.json");
 const DEBUG_FILE = join(PI_DIR, "pi-command-history-debug.log");
 const MAX_HISTORY = 500;
+const MAX_PERSISTED_HISTORY = MAX_HISTORY * 2;
 const DEFAULT_PREV_KEY = "up";
 const DEFAULT_NEXT_KEY = "down";
 const SAFE_PREV_KEY = "ctrl+up";
@@ -96,26 +99,49 @@ function readConflictStrategy(value: unknown): ConflictStrategy | undefined {
 }
 
 function getHistoryFile(cwd: string): string {
+  const hash = createHash("sha256").update(cwd).digest("hex");
+  return join(HISTORY_DIR, `${hash}.jsonl`);
+}
+
+function getLegacyHistoryFile(cwd: string): string {
   return join(HISTORY_DIR, `${cwd.replaceAll("/", "-")}.jsonl`);
 }
 
-function loadHistory(cwd: string): string[] {
+interface LoadedHistory {
+  entries: string[];
+  recordCount: number;
+}
+
+async function loadHistory(cwd: string): Promise<LoadedHistory> {
   const file = getHistoryFile(cwd);
-  if (!existsSync(file)) return [];
+  const legacyFile = getLegacyHistoryFile(cwd);
+  const sourceFile = existsSync(file) ? file : existsSync(legacyFile) ? legacyFile : undefined;
+  if (!sourceFile) return { entries: [], recordCount: 0 };
 
   try {
     const unique = new Map<string, string>();
-    for (const line of readFileSync(file, "utf-8").split("\n")) {
+    let recordCount = 0;
+    for (const line of (await readFile(sourceFile, "utf-8")).split("\n")) {
       const entry = line.trim() ? readJsonFileLine(line) : undefined;
       if (typeof entry?.text !== "string" || entry.cwd !== cwd) continue;
 
+      recordCount++;
       unique.delete(entry.text);
       unique.set(entry.text, entry.text);
     }
 
-    return [...unique.values()].slice(-MAX_HISTORY);
+    const entries = [...unique.values()].slice(-MAX_HISTORY);
+    if (sourceFile === legacyFile) {
+      try {
+        await compactHistory(cwd, entries);
+      } catch {
+        // Keep using the legacy file when its one-time migration cannot be written.
+      }
+    }
+
+    return { entries, recordCount: sourceFile === legacyFile ? entries.length : recordCount };
   } catch {
-    return [];
+    return { entries: [], recordCount: 0 };
   }
 }
 
@@ -128,13 +154,22 @@ function readJsonFileLine(line: string): Record<string, unknown> | undefined {
   }
 }
 
-function appendHistory(cwd: string, text: string): void {
-  mkdirSync(HISTORY_DIR, { recursive: true });
-  appendFileSync(
+async function appendHistory(cwd: string, text: string): Promise<void> {
+  await mkdir(HISTORY_DIR, { recursive: true });
+  await appendFile(
     getHistoryFile(cwd),
     JSON.stringify({ cwd, text, ts: Date.now() }) + "\n",
     "utf-8",
   );
+}
+
+async function compactHistory(cwd: string, entries: string[]): Promise<void> {
+  await mkdir(HISTORY_DIR, { recursive: true });
+  const file = getHistoryFile(cwd);
+  const temporaryFile = `${file}.tmp`;
+  const data = entries.map((text) => JSON.stringify({ cwd, text, ts: Date.now() })).join("\n");
+  await writeFile(temporaryFile, data ? `${data}\n` : "", "utf-8");
+  await rename(temporaryFile, file);
 }
 
 function formatShortcutHint(prev: string, next: string): string {
@@ -154,35 +189,36 @@ function isKnownConflict(shortcut: ShortcutKey): boolean {
   return shortcut === "up" || shortcut === "down";
 }
 
-export function canHandleHistoryKey(
+export function getHistoryNavigationAction(
   editor: AutocompleteAwareEditor | undefined,
   editorText: string,
+  historyIndex: number,
+  historyLength: number,
   matchesPrev: boolean,
   matchesNext: boolean,
-): boolean {
-  if (editor?.focused === false) return false;
+): "previous" | "next" | undefined {
+  if (matchesPrev === matchesNext || historyLength === 0 || !editor || editor.focused === false) {
+    return undefined;
+  }
+  if (editor?.isShowingAutocomplete?.()) return undefined;
 
   const visualEditor = editor as VisualBoundaryEditor | undefined;
 
+  if (historyIndex === -1) {
+    return matchesPrev && editorText.length === 0 ? "previous" : undefined;
+  }
+
   if (matchesPrev) {
     const isOnFirstVisualLine = visualEditor?.isOnFirstVisualLine?.();
-    if (typeof isOnFirstVisualLine === "boolean") return isOnFirstVisualLine;
+    return isOnFirstVisualLine ? "previous" : undefined;
   }
 
   if (matchesNext) {
     const isOnLastVisualLine = visualEditor?.isOnLastVisualLine?.();
-    if (typeof isOnLastVisualLine === "boolean") return isOnLastVisualLine;
+    return isOnLastVisualLine ? "next" : undefined;
   }
 
-  if (!editorText.includes("\n")) return true;
-
-  const cursor = editor?.getCursor?.();
-  const lines = editor?.getLines?.();
-  return Boolean(
-    cursor &&
-    lines &&
-    ((matchesPrev && cursor.line === 0) || (matchesNext && cursor.line === lines.length - 1)),
-  );
+  return undefined;
 }
 
 function formatRawInput(data: string): string {
@@ -209,26 +245,41 @@ export default function register(pi: ExtensionAPI) {
     conflictStrategy === "safe" && isKnownConflict(configuredNextKey)
       ? SAFE_NEXT_KEY
       : configuredNextKey;
+  const shortcutsAreDistinct = keyPrev !== keyNext;
   const showStatus = config.showStatus ?? "hidden";
   const debugEnabled = config.debug === true || process.env.PI_COMMAND_HISTORY_DEBUG === "1";
   const shouldUseRawInput = (shortcut: ShortcutKey) =>
     conflictStrategy === "auto" && isKnownConflict(shortcut);
 
-  const debug = (message: string, data?: Record<string, unknown>): void => {
-    if (!debugEnabled) return;
-
-    mkdirSync(PI_DIR, { recursive: true });
-    const dataPart = data ? ` ${JSON.stringify(data)}` : "";
-    appendFileSync(DEBUG_FILE, `[${new Date().toISOString()}] ${message}${dataPart}\n`, "utf-8");
-  };
-
   let history: string[] = [];
   let historyIndex = -1;
-  let savedEditorText = "";
   let currentCwd = "";
   let currentStatusLabel: string | undefined;
   let currentEditor: AutocompleteAwareEditor | undefined;
   let unsubscribeRawInput: (() => void) | undefined;
+  let persistedRecordCount = 0;
+  let compactionScheduled = false;
+  let persistenceQueue = Promise.resolve();
+  let debugQueue = Promise.resolve();
+
+  const debug = (message: string, data?: Record<string, unknown>): void => {
+    if (!debugEnabled) return;
+
+    const dataPart = data ? ` ${JSON.stringify(data)}` : "";
+    debugQueue = debugQueue
+      .then(async () => {
+        await mkdir(PI_DIR, { recursive: true });
+        await appendFile(DEBUG_FILE, `[${new Date().toISOString()}] ${message}${dataPart}\n`, "utf-8");
+      })
+      .catch(() => {});
+  };
+
+  const enqueuePersistence = (operation: () => Promise<void>, onFailure?: () => void): void => {
+    persistenceQueue = persistenceQueue.then(operation).catch((error: unknown) => {
+      onFailure?.();
+      debug("history persistence failed", { error: String(error) });
+    });
+  };
 
   const refreshStatus = (ctx: HistoryContext): void => {
     ctx.ui.setStatus("folder-history", currentStatusLabel);
@@ -245,11 +296,6 @@ export default function register(pi: ExtensionAPI) {
       return false;
     }
 
-    if (historyIndex === -1) {
-      savedEditorText = ctx.ui.getEditorText();
-      debug("showPrevious saved editor text", { length: savedEditorText.length });
-    }
-
     historyIndex = nextIndex;
     ctx.ui.setEditorText(history[history.length - 1 - historyIndex]);
     refreshStatus(ctx);
@@ -264,9 +310,7 @@ export default function register(pi: ExtensionAPI) {
     }
 
     historyIndex--;
-    ctx.ui.setEditorText(
-      historyIndex === -1 ? savedEditorText : history[history.length - 1 - historyIndex],
-    );
+    ctx.ui.setEditorText(historyIndex === -1 ? "" : history[history.length - 1 - historyIndex]);
     refreshStatus(ctx);
     debug("showNext applied", { historyIndex, historyLength: history.length });
     return true;
@@ -275,9 +319,9 @@ export default function register(pi: ExtensionAPI) {
   const registerHistoryShortcut = (
     shortcut: ShortcutKey,
     description: string,
-    handler: (ctx: HistoryContext) => boolean,
+    direction: "previous" | "next",
   ): void => {
-    if (shouldUseRawInput(shortcut)) {
+    if (!shortcutsAreDistinct || shouldUseRawInput(shortcut)) {
       debug("registerShortcut skipped for raw input", { shortcut, description });
       return;
     }
@@ -286,16 +330,27 @@ export default function register(pi: ExtensionAPI) {
     pi.registerShortcut(shortcut, {
       description,
       handler: (ctx) => {
-        handler(ctx);
+        const action = getHistoryNavigationAction(
+          currentEditor,
+          ctx.ui.getEditorText(),
+          historyIndex,
+          history.length,
+          direction === "previous",
+          direction === "next",
+        );
+        if (action === "previous") showPrevious(ctx);
+        if (action === "next") showNext(ctx);
       },
     });
   };
 
-  pi.on("session_start", (_event, ctx) => {
+  pi.on("session_start", async (_event, ctx) => {
     currentCwd = ctx.cwd;
-    history = loadHistory(currentCwd);
+    const loadedHistory = await loadHistory(currentCwd);
+    history = loadedHistory.entries;
+    persistedRecordCount = loadedHistory.recordCount;
     historyIndex = -1;
-    savedEditorText = "";
+    compactionScheduled = false;
 
     let icon = "";
     if (showStatus === "full") icon = "📜 ";
@@ -317,6 +372,11 @@ export default function register(pi: ExtensionAPI) {
 
     if (showStatus !== "hidden") {
       ctx.ui.setStatus("folder-history", currentStatusLabel);
+    }
+
+    if (!shortcutsAreDistinct) {
+      console.warn("[pi-command-history] Previous and next history shortcuts must differ; shortcuts disabled.");
+      return;
     }
 
     const previousEditorFactory = ctx.ui.getEditorComponent();
@@ -345,16 +405,6 @@ export default function register(pi: ExtensionAPI) {
         return;
       }
 
-      if (history.length === 0 && historyIndex === -1) {
-        debug("raw input passed through", { reason: "empty-history" });
-        return;
-      }
-
-      if (historyIndex === -1 && currentEditor?.isShowingAutocomplete?.()) {
-        debug("raw input passed through", { reason: "autocomplete-active" });
-        return;
-      }
-
       const editorText = ctx.ui.getEditorText();
       if (debugEnabled) {
         debug("raw input received", {
@@ -371,32 +421,35 @@ export default function register(pi: ExtensionAPI) {
         });
       }
 
-      if (!canHandleHistoryKey(currentEditor, editorText, matchesPrev, matchesNext)) {
+      const action = getHistoryNavigationAction(
+        currentEditor,
+        editorText,
+        historyIndex,
+        history.length,
+        matchesPrev,
+        matchesNext,
+      );
+      if (!action) {
         debug("raw input passed through", { reason: "not-history-boundary" });
         return;
       }
 
-      if (matchesPrev && showPrevious(ctx)) {
-        debug("raw input consumed", { action: "previous" });
-        return { consume: true };
-      }
-
-      if (matchesNext && showNext(ctx)) {
-        debug("raw input consumed", { action: "next" });
-        return { consume: true };
-      }
-
-      debug("raw input matched but passed through", { reason: "no-history-change" });
+      if (action === "previous") showPrevious(ctx);
+      if (action === "next") showNext(ctx);
+      debug("raw input consumed", { action });
+      return { consume: true };
     });
   });
 
-  pi.on("session_shutdown", () => {
+  pi.on("session_shutdown", async () => {
     debug("session_shutdown");
     unsubscribeRawInput?.();
     unsubscribeRawInput = undefined;
+    await persistenceQueue;
+    await debugQueue;
   });
 
-  pi.on("input", (event) => {
+  pi.on("input", (event, ctx) => {
     const text = event.text?.trim();
     if (!text || !currentCwd) {
       debug("input skipped", { hasText: Boolean(text), hasCurrentCwd: Boolean(currentCwd) });
@@ -404,14 +457,33 @@ export default function register(pi: ExtensionAPI) {
     }
 
     debug("input saved", { length: text.length, cwd: currentCwd });
-    appendHistory(currentCwd, text);
     history = [...history.filter((entry) => entry !== text), text].slice(-MAX_HISTORY);
     historyIndex = -1;
-    savedEditorText = "";
+    persistedRecordCount++;
+    const shouldCompact = persistedRecordCount >= MAX_PERSISTED_HISTORY && !compactionScheduled;
+    const historySnapshot = shouldCompact ? [...history] : undefined;
+    const recordCountAtCompaction = persistedRecordCount;
+    compactionScheduled ||= shouldCompact;
+    const cwd = currentCwd;
+
+    enqueuePersistence(async () => {
+      await appendHistory(cwd, text);
+      if (!historySnapshot) return;
+
+      await compactHistory(cwd, historySnapshot);
+      persistedRecordCount = historySnapshot.length + persistedRecordCount - recordCountAtCompaction;
+      compactionScheduled = false;
+    }, historySnapshot ? () => { compactionScheduled = false; } : undefined);
+    const icon = showStatus === "full" ? "📜 " : "";
+    currentStatusLabel =
+      showStatus !== "hidden"
+        ? `${icon}${history.length} cmds ${formatShortcutHint(keyPrev, keyNext)}`
+        : undefined;
+    refreshStatus(ctx);
 
     return { action: "continue" as const };
   });
 
-  registerHistoryShortcut(keyPrev, "Previous command from folder history", showPrevious);
-  registerHistoryShortcut(keyNext, "Next command from folder history", showNext);
+  registerHistoryShortcut(keyPrev, "Previous command from folder history", "previous");
+  registerHistoryShortcut(keyNext, "Next command from folder history", "next");
 }
